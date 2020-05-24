@@ -1,0 +1,28 @@
+Data persistence note:
+	While there's no data persistence across redis image rebuilds, the image is typically not rebuilt.
+
+Known-working versions:
+	docker 19.03.9
+		https://docs.docker.com/engine/install/
+
+	docker-compose 1.25.5
+		https://docs.docker.com/compose/install/
+
+Setup steps
+------------
+
+1. Add domain to hosts file:
+	127.0.0.1		fnkernel.haxel.ca
+
+2. Build the base python image, from repo root:
+	# docker build -t pythonbase ./images/pythonbase/
+
+3.  Bring up the services, from repo root:
+	# docker-compose up
+
+4. View a node's signal in a browser
+	http://fnkernel.haxel.ca:1080/node/9d48da33-1276-420b-b58f-2e7f85abfa46
+
+	Notes:
+		Nodes are auto-created if the UUID doesn't exist
+		To see the signal of a new node, add two points (press the button twice)

@@ -17,7 +17,7 @@ class Node():
     :raises NodeNotFoundError:
     '''
 
-    def __init__(self, data_proxy, uuid=None, load=True):
+    def __init__(self, data_proxy, uuid=None, load=True, create=False):
         self.data_proxy = data_proxy
         self.saved = False
         self.loaded = False
@@ -31,7 +31,9 @@ class Node():
             self.uuid = str(uuid4())
         else:
             self.uuid = uuid
-            if load:
+            if create:
+                self.save()
+            elif load:
                 self.load()
 
     def __repr__(self):

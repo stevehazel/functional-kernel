@@ -11,12 +11,14 @@ from uuid import uuid4
 from flask import Flask, request
 from flask_socketio import SocketIO, emit, disconnect, join_room, leave_room
 
+from util import is_uuid
+
 app = Flask(__name__)
 app.debug = True
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app)
 
-redis = StrictRedis(host='127.0.0.1', db=0)
+redis = StrictRedis(host='redis', db=0)
 
 
 class SignalInterface(object):
@@ -152,8 +154,8 @@ def handle_message(message):
             print('SessionID missing')
             return
 
-        if not node_uuid:
-            print('NodeUUID missing')
+        if not node_uuid or not is_uuid(node_uuid):
+            print('NodeUUID required')
             return
 
         app.signal_interface.set_namespace(node_uuid, request.namespace)
@@ -177,14 +179,11 @@ def handle_message(message):
 
 def add_point(node_uuid, point_time=None):
     import time
-    from redis import StrictRedis
     from node import Node
     from data_proxy.redis import RedisProxy
 
-    redis = StrictRedis()
-
     redis_proxy = RedisProxy(redis)
-    root_node = Node(redis_proxy, uuid=node_uuid)
+    root_node = Node(redis_proxy, uuid=node_uuid, create=True)
 
     if not point_time:
         point_time = time.time()

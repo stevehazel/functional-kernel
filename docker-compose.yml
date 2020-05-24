@@ -1,0 +1,48 @@
+version: '3.4'
+
+services:
+  redis:
+    image: "redis:6.0.3-alpine"
+
+  nginx:
+    image: "fn_interface_nginx"
+    build:
+      context: ./interface/images/nginx
+      dockerfile: Dockerfile
+    ports:
+      - '1080:80'
+    depends_on:
+      - interface_app
+      - interface_signal
+
+  interface_app:
+    image: "fn_interface_app"
+    build:
+      context: ./interface
+      dockerfile: Dockerfile
+    environment:
+      PYTHONPATH: /opt/kernel
+    command: python /opt/interface/app_server.py 7010
+    volumes:
+      - ./interface:/opt/interface
+      - ./kernel:/opt/kernel
+    ports:
+      - 7010:7010
+    depends_on:
+      - redis
+
+  interface_signal:
+    image: "fn_interface_signal"
+    build:
+      context: ./interface
+      dockerfile: Dockerfile
+    environment:
+      PYTHONPATH: /opt/kernel
+    command: python /opt/interface/signal_server.py 7011
+    volumes:
+      - ./interface:/opt/interface
+      - ./kernel:/opt/kernel
+    ports:
+      - 7011:7011
+    depends_on:
+      - redis

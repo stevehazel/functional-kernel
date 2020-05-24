@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+*/io_proxy/*
+
+*sublime*
+notes/
+
 # C extensions
 *.so
 

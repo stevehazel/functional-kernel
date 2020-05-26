@@ -21,9 +21,16 @@ class NodeSaveError(Exception):
     pass
 
 
+class NodeSerializationError(Exception):
+    pass
+
+
 class BaseDataProxy():
     PointNotFoundError = PointNotFoundError
+    PointSaveError = PointSaveError
     NodeNotFoundError = NodeNotFoundError
+    NodeSaveError = NodeSaveError
+    NodeSerializationError = NodeSerializationError
 
     def __init__(self, *args, **kwargs):
         pass
@@ -57,8 +64,9 @@ class RedisProxy(BaseDataProxy):
         try:
             node_def = json.loads(node_json)
         except Exception as e:
+            # TODO: Setup a proper log sink
             traceback.print_exc()
-            raise Exception('Node load failed: %s' % e)
+            raise self.NodeSerializationError('Node load failed: %s' % e)
 
         return node_def
 
@@ -74,6 +82,7 @@ class RedisProxy(BaseDataProxy):
         except self.NodeSaveError:
             raise
         except Exception as e:
+            # TODO: Setup a proper log sink
             traceback.print_exc()
             raise self.NodeSaveError(f'Node save failed: {e}')
 
@@ -102,8 +111,32 @@ class RedisProxy(BaseDataProxy):
             keyval['wave_func'] = json.dumps(wave_func)
             self.redis.xadd(signal_key, keyval, maxlen=1, approximate=False)
 
+        elif action == 'AddOutgoingConnection':
+            node_uuid = kwargs['node_uuid']
+            outgoing_node_uuid = kwargs['outgoing_node_uuid']
+            timestamp = time.time()
+
+            stream_key = self.get_node_stream_key(node_uuid)
+            self.redis.xadd(stream_key, {
+                'action': action,
+                'outgoing_node_uuid': outgoing_node_uuid,
+                'timestamp': timestamp
+            })
+
+        elif action == 'AddIncomingConnection':
+            node_uuid = kwargs['node_uuid']
+            incoming_node_uuid = kwargs['incoming_node_uuid']
+            timestamp = time.time()
+
+            stream_key = self.get_node_stream_key(node_uuid)
+            self.redis.xadd(stream_key, {
+                'action': action,
+                'incoming_node_uuid': incoming_node_uuid,
+                'timestamp': timestamp
+            })
+
         else:
-            raise Exception('delta not implemented for %s' % action)
+            raise NotImplementedError('Delta not implemented for %s' % action)
 
     def get_node_history(self, node,
                          anchor_timestamp=None,
@@ -136,7 +169,7 @@ class RedisProxy(BaseDataProxy):
         node_points_key = self.get_node_points_key(node.uuid)
         result = self.redis.zadd(node_points_key, dict([(point_uuid, timestamp)]))
         if result != 1:
-            raise Exception('Failed to add point to node via redis')
+            raise self.PointSaveError('Failed to add point to node via redis')
 
         self.delta('AddPoint', node_uuid=node.uuid, point_uuid=point_uuid, timestamp=timestamp)
         return point_uuid
@@ -151,6 +184,7 @@ class RedisProxy(BaseDataProxy):
         except self.PointNotFoundError:
             raise
         except Exception as e:
+            # TODO: Setup a proper log sink
             traceback.print_exc()
             raise self.PointNotFoundError(f'Point load failed: {e}')
 
@@ -158,13 +192,18 @@ class RedisProxy(BaseDataProxy):
 
     def update_point(self, point):
         node_points_key = self.get_node_points_key(point.node_uuid)
+        timestamp = point.timestamp_epoch
 
         try:
-            self.redis.zadd(node_points_key, dict([(point.uuid, point.timestamp_epoch)]))
+            self.redis.zadd(node_points_key, dict([(point.uuid, timestamp)]))
         except Exception as e:
+            # TODO: Setup a proper log sink
             traceback.print_exc()
             raise self.PointSaveError(f'Point save failed: {e}')
         else:
-            self.delta('UpdatePoint', node_uuid=point.node_uuid, point_uuid=point.uuid, timestamp=timestamp)
+            self.delta('UpdatePoint',
+                       node_uuid=point.node_uuid,
+                       point_uuid=point.uuid,
+                       timestamp=timestamp)
 
         return point

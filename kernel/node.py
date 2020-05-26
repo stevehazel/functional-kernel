@@ -1,9 +1,22 @@
 import time
 import math
+import traceback
 from uuid import uuid4
 
 from point import Point
 from wave_func import WaveFunc
+
+
+class NodeNotSavedError(Exception):
+    pass
+
+
+class GraphIntegrityError(Exception):
+    pass
+
+
+class GraphTraversalError(Exception):
+    pass
 
 
 class Node():
@@ -14,8 +27,13 @@ class Node():
     :param uuid: uuid as produced by str(uuid4())
     :param load: If True, load now. Otherwise must call load().
     :returns: Node
-    :raises NodeNotFoundError:
+    :raises BaseDataProxy.NodeNotFoundError: If create=False and load=True but the ID is not
+                found in the data layer.
+            BaseDataProxy.NodeSerializationError:
     '''
+
+    NodeNotSavedError = NodeNotSavedError
+    GraphIntegrityError = GraphIntegrityError
 
     def __init__(self, data_proxy, uuid=None, load=True, create=False):
         self.data_proxy = data_proxy
@@ -32,6 +50,7 @@ class Node():
         else:
             self.uuid = uuid
             if create:
+                # TODO: Check that the UUID doesn't already exist
                 self.save()
             elif load:
                 self.load()
@@ -44,7 +63,8 @@ class Node():
         Call the data proxy to retrieve the node details and set object state
 
         :returns: dict
-        :raises NodeNotFoundError:
+        :raises BaseDataProxy.NodeNotFoundError:
+                BaseDataProxy.NodeSerializationError:
         '''
 
         node_def = self.data_proxy.load_node(self.uuid)
@@ -62,8 +82,8 @@ class Node():
         '''
         Call the data proxy to persist the current state
 
-        :returns: ??
-        :raises Exception:
+        :returns: None
+        :raises BaseDataProxy.NodeSaveError: Generally a problem with the data layer.
         '''
 
         self.data_proxy.save_node(self)
@@ -76,6 +96,98 @@ class Node():
             'outgoing': self.outgoing[:],
             'incoming': self.incoming[:],
         }
+
+    def connect_to(self, node):
+        '''
+        Create and persist a bidirectional outgoing connection to another node
+
+        :returns: None
+        :raises NodeNotSavedError: One of the nodes has not been saved
+        '''
+
+        # NOTE: For a bit of safety until atomic transactions span multiple nodes, enforce that
+        # nodes must be already saved.
+        if not self.saved:
+            raise self.NodeNotSavedError('Current node must be saved')
+
+        if not node.saved:
+            raise self.NodeNotSavedError('Destination node must be saved')
+
+        if self.uuid == node.uuid:
+            raise self.GraphIntegrityError('Cannot connect to self')
+
+        self.add_outgoing(node)
+        node.add_incoming(self)
+
+        # TODO: Wrap in a redis transaction to ensure atomicity
+        # TODO: Defer the delta output (below) until transaction suceeds
+        self.save()
+        node.save()
+
+    def connect_from(self, node):
+        '''
+        The reverse of connect_to(), with identical signature.
+        '''
+
+        node.connect_to(self)
+
+    def add_outgoing(self, node, emit_delta=True):
+        if node.uuid in self.outgoing:
+            return
+
+        self.outgoing.append(node.uuid)
+        if emit_delta:
+            self.data_proxy.delta('AddOutgoingConnection',
+                                  node_uuid=self.uuid,
+                                  outgoing_node_uuid=node.uuid)
+
+    def add_incoming(self, node, emit_delta=True):
+        if node.uuid in self.incoming:
+            return
+
+        self.incoming.append(node.uuid)
+        if emit_delta:
+            self.data_proxy.delta('AddIncomingConnection',
+                                  node_uuid=self.uuid,
+                                  incoming_node_uuid=node.uuid)
+
+    def query_outgoing(self, seen=None):
+        '''
+        Traverse the graph to retrieve the set of nodes linked by outgoing connections. Has basic
+            cycle prevention.
+
+        :returns: dict of node_uuid -> Node
+        :raises GraphTraversalError: A wrapper around the Node constructor, typically representing
+            a NodeNotFoundError or NodeSerializationError
+        '''
+
+        if not seen:
+            seen = set([])
+
+        result = {}
+        result[self.uuid] = self
+
+        for outgoing_node_uuid in self.outgoing:
+            if seen and outgoing_node_uuid in seen:
+                continue
+
+            try:
+                # NOTE: While it's clearly inefficient to make a round-trip call for each Node,
+                # right now the primary concern is whether or not this design achieves the
+                # high-level goal.
+                outgoing_node = Node(self.data_proxy, uuid=outgoing_node_uuid, load=True)
+            except Exception as e:
+                # TODO: Setup a proper log sink
+                traceback.print_exc()
+                raise self.GraphTraversalError(e)
+            else:
+                result[outgoing_node_uuid] = outgoing_node
+                seen.add(outgoing_node_uuid)
+
+                outgoing_result = outgoing_node.query_outgoing(seen=seen)
+                result.update(outgoing_result)
+
+        return result
 
     def get_period(self, anchor_timestamp=None, window=None):
         if not anchor_timestamp:
@@ -150,7 +262,7 @@ class Node():
         :param anchor_timestamp: newest possible point
         :param window: range in seconds
         :param limit: maximum number of points to return, newest first
-        :returns: list of points
+        :returns: list of points serialized as dicts
         :raises Exception: raises an exception
         '''
 
@@ -165,11 +277,17 @@ class Node():
         point_uuid = self.data_proxy.create_point(self, timestamp_epoch)
         wave_func = self.get_score_func()
         if wave_func:
-            self.data_proxy.delta('NodeSignal', node_uuid=self.uuid, wave_func=wave_func.serialize())
-        return Point(self.data_proxy, self.uuid, uuid=point_uuid,
-                     timestamp_epoch=timestamp_epoch, load=False)
+            self.data_proxy.delta('NodeSignal',
+                                  node_uuid=self.uuid,
+                                  wave_func=wave_func.serialize())
+        return Point(self.data_proxy, self.uuid,
+                     uuid=point_uuid,
+                     timestamp_epoch=timestamp_epoch,
+                     load=False)
 
     def get_point(self, point_uuid):
         timestamp_epoch = self.data_proxy.get_point(self.uuid, point_uuid)
-        return Point(self.data_proxy, self.uuid, uuid=point_uuid,
-                     timestamp_epoch=timestamp_epoch, load=False)
+        return Point(self.data_proxy, self.uuid,
+                     uuid=point_uuid,
+                     timestamp_epoch=timestamp_epoch,
+                     load=False)

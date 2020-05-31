@@ -2,6 +2,7 @@ import time
 import math
 import traceback
 from uuid import uuid4
+from copy import deepcopy
 
 from point import Point
 from wave_func import WaveFunc
@@ -35,15 +36,20 @@ class Node():
     NodeNotSavedError = NodeNotSavedError
     GraphIntegrityError = GraphIntegrityError
 
-    def __init__(self, data_proxy, uuid=None, load=True, create=False):
+    def __init__(self, data_proxy, uuid=None, attributes=None, load=True, create=False):
         self.data_proxy = data_proxy
         self.saved = False
+        self.dirty = True
         self.loaded = False
         self.dirty = False
 
         self.incoming = []
         self.outgoing = []
         self.synthesis = None
+
+        if not attributes or type(attributes) is not dict:
+            attributes = {}
+        self.attributes = attributes
 
         if not uuid:
             self.uuid = str(uuid4())
@@ -72,9 +78,11 @@ class Node():
         self.incoming = node_def['incoming']
         self.outgoing = node_def['outgoing']
         self.synthesis = node_def['synthesis']
+        self.attributes = node_def['attributes']
 
         self.loaded = True
         self.saved = True
+        self.dirty = False
 
         return node_def
 
@@ -88,6 +96,7 @@ class Node():
 
         self.data_proxy.save_node(self)
         self.saved = True
+        self.dirty = False
 
     def serialize(self):
         return {
@@ -95,6 +104,7 @@ class Node():
             'synthesis': self.synthesis,
             'outgoing': self.outgoing[:],
             'incoming': self.incoming[:],
+            'attributes': deepcopy(self.attributes)
         }
 
     def connect_to(self, node):
@@ -107,10 +117,10 @@ class Node():
 
         # NOTE: For a bit of safety until atomic transactions span multiple nodes, enforce that
         # nodes must be already saved.
-        if not self.saved:
+        if not self.saved or self.dirty:
             raise self.NodeNotSavedError('Current node must be saved')
 
-        if not node.saved:
+        if not node.saved or node.dirty:
             raise self.NodeNotSavedError('Destination node must be saved')
 
         if self.uuid == node.uuid:
@@ -130,6 +140,14 @@ class Node():
         '''
 
         node.connect_to(self)
+
+    def get_outgoing(self):
+        outgoing_nodes = []
+        for outgoing_node_uuid in self.outgoing:
+            outgoing_node = Node(self.data_proxy, uuid=outgoing_node_uuid, load=True)
+            outgoing_nodes.append(outgoing_node)
+
+        return outgoing_nodes
 
     def add_outgoing(self, node, emit_delta=True):
         if node.uuid in self.outgoing:
@@ -189,6 +207,16 @@ class Node():
 
         return result
 
+    def set_attribute(self, key, value, save=False):
+        self.attributes[key] = value
+        self.dirty = True
+
+        if save:
+            self.save()
+
+    def attr(self, key):
+        return self.attributes.get(key)
+
     def get_period(self, anchor_timestamp=None, window=None):
         if not anchor_timestamp:
             anchor_timestamp = math.ceil(time.time())
@@ -238,7 +266,7 @@ class Node():
         period, time_since = self.get_period(anchor_timestamp=anchor_timestamp,
                                              window=window)
 
-        if not time_since:
+        if time_since is None:
             return None
 
         wave_func_def = {
